@@ -82,6 +82,14 @@ AddAddress(Ptr<Node> node, Time at, int ifindex, const char *address)
 }
 
 
+static void
+AddLoAddress(Ptr<Node> node, Time at, const char *address)
+{
+	std::ostringstream oss;
+	oss << "-f inet addr add " << address << " dev lo";
+	RunIp(node, at, oss.str());
+}
+
 int
 main (int argc, char ** argv)
 {
@@ -220,22 +228,72 @@ main (int argc, char ** argv)
 		       << ndc_edge2node[linkn].Get(1)->GetIfIndex() << " up";
 
 		/* Address is, Pod+1+200.Edge+1.Node+1.(1|2)/24 */
-		simaddr1 << pod +1 + 200 << "." << edge + 1 << "."
+		simaddr1 << pod + 1 + 200 << "." << edge + 1 << "."
 			 << node + 1 << "." << "1/24";
-		simaddr2 << pod +1 + 200 << "." << edge + 1 << "."
+		simaddr2 << pod + 1 + 200 << "." << edge + 1 << "."
 			 << node + 1 << "." << "2/24";
 		
 		AddAddress(nc_edge2node[linkn].Get(0), Seconds(0.3),
 			   ndc_edge2node[linkn].Get(0)->GetIfIndex(),
 			   simaddr1.str().c_str());
 		AddAddress(nc_edge2node[linkn].Get(1), Seconds(0.3),
-			   ndc_edge2node[linkn].Get(0)->GetIfIndex(),
+			   ndc_edge2node[linkn].Get(1)->GetIfIndex(),
 			   simaddr2.str().c_str());
 
-		RunIp(nc_aggr2edge[linkn].Get(0), Seconds(0.31), simup1.str());
-		RunIp(nc_aggr2edge[linkn].Get(1), Seconds(0.31), simup2.str());
+		RunIp(nc_edge2node[linkn].Get(0), Seconds(0.31), simup1.str());
+		RunIp(nc_edge2node[linkn].Get(1), Seconds(0.31), simup2.str());
 	}
 	}
+	}
+
+
+	/* set up loopback addresses of root switches.
+	 * Address is 254.255.255.Root+1 .
+	 */
+
+	for (int root = 0; root < ROOTSWNUM; root++) {
+		std::stringstream loaddr;
+
+		loaddr << root + 1 << ".255.255.255/32";
+		AddLoAddress(rootsw.Get(root), Seconds(0.4),
+			     loaddr.str().c_str());
+	}
+
+	/* set up loopback address of aggregation switches.
+	 * Address is 254.255.Pod+1.Aggr+1/32
+	 */
+
+	for (int pod = 0; pod < PODNUM; pod++) {
+	for (int aggr = 0; aggr < AGGRSWINPODNUM; aggr++) {
+		std::stringstream loaddr;
+
+		int aggrn = AGGRSWINPODNUM * pod + aggr;
+		loaddr << pod + 1 << "." << aggr + 1 << ".255.255/32";
+		AddLoAddress(aggrsw.Get(aggrn), Seconds(0.4),
+			     loaddr.str().c_str());
+	}
+	}
+
+
+	/* ifconfig and ip route show */
+	std::stringstream as, rs;
+	as << "addr show";
+	rs << "route show";
+	for (int root = 0; root < ROOTSWNUM; root++) {
+		RunIp(rootsw.Get(root), Seconds(1), as.str());
+		RunIp(rootsw.Get(root), Seconds(2), rs.str());
+	}
+	for (int aggr = 0; aggr < AGGRSWNUM; aggr++) {
+		RunIp(aggrsw.Get(aggr), Seconds(1), as.str());
+		RunIp(aggrsw.Get(aggr), Seconds(2), rs.str());
+	}
+	for (int edge = 0; edge < EDGESWNUM; edge++) {
+		RunIp(edgesw.Get(edge), Seconds(1), as.str());
+		RunIp(edgesw.Get(edge), Seconds(2), rs.str());
+	}
+	for (int node = 0; node < NODENUM; node++) {
+		RunIp(nodes.Get(node), Seconds(1), as.str());
+		RunIp(nodes.Get(node), Seconds(2), rs.str());
 	}
 
 
