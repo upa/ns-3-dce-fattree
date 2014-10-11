@@ -42,6 +42,11 @@ NetDeviceContainer	ndc_root2aggr[ROOT2AGGRLINKS];
 NetDeviceContainer	ndc_aggr2edge[AGGR2EDGELINKS];
 NetDeviceContainer	ndc_edge2node[EDGE2NODELINKS];
 
+/* Preferred prefix for LoopBack Address */
+#define ROOTLOPREFIX	"250.255.255."
+#define AGGRLOPREFIX	"250.255."
+
+
 
 static void
 SetRlimit()
@@ -57,6 +62,24 @@ SetRlimit()
 		perror("setrlimit");
 	}
 	return;
+}
+
+
+static void
+RunPing(Ptr<Node> node, Time at, const char *target)
+{
+	std::ostringstream oss;
+
+	oss << "-w 1 -c 1 " << target;
+
+	DceApplicationHelper process;
+	ApplicationContainer apps;
+	process.SetBinary("ping");
+	process.SetStackSize(1 << 16);
+	process.ResetArguments();
+	process.ParseArguments(oss.str().c_str());
+	apps = process.Install(node);
+	apps.Start(at);
 }
 
 
@@ -87,6 +110,14 @@ AddLoAddress(Ptr<Node> node, Time at, const char *address)
 {
 	std::ostringstream oss;
 	oss << "-f inet addr add " << address << " dev lo";
+	RunIp(node, at, oss.str());
+}
+
+static void
+AddRoute(Ptr<Node> node, Time at, const char *dst, const char *next)
+{
+	std::ostringstream oss;
+	oss << "-f inet route add to " << dst << " via " << next;
 	RunIp(node, at, oss.str());
 }
 
@@ -121,9 +152,9 @@ main (int argc, char ** argv)
 	for (int pod = 0; pod < PODNUM; pod++) {
 	for (int root = 0; root < ROOTSWNUM; root++) {
 
-		int linkn = pod * PODNUM + root; /* link num */
+		int linkn = PODNUM * pod + root; /* link num */
 		int aggr = (int)(root / KARY2);
-		int aggrn = pod * AGGRSWINPODNUM + aggr;
+		int aggrn = AGGRSWINPODNUM * pod + aggr;
 
 		PointToPointHelper p2p;
 		p2p.SetDeviceAttribute("DataRate", StringValue ("1000Mbps"));
@@ -146,15 +177,33 @@ main (int argc, char ** argv)
 		simaddr2 << root + 1 << "." << pod + 1 << "." 
 			 << aggr + 1 << "." << "2/24";
 
-		AddAddress(nc_root2aggr[linkn].Get(0), Seconds(0.1),
+		AddAddress(nc_root2aggr[linkn].Get(0), Seconds(1),
 			   ndc_root2aggr[linkn].Get(0)->GetIfIndex(),
 			   simaddr1.str().c_str());
-		AddAddress(nc_root2aggr[linkn].Get(1), Seconds(0.1),
+		AddAddress(nc_root2aggr[linkn].Get(1), Seconds(1),
 			   ndc_root2aggr[linkn].Get(1)->GetIfIndex(),
 			   simaddr2.str().c_str());
 
 		RunIp(nc_root2aggr[linkn].Get(0), Seconds(0.11), simup1.str());
 		RunIp(nc_root2aggr[linkn].Get(1), Seconds(0.11), simup1.str());
+
+
+		/* set route from Root to Aggr prefix is Pod+1+200.0.0.0/8 */
+		std::stringstream podprefix, aggrsim;
+		podprefix << pod + 1 + 200 << ".0.0.0/8";
+		aggrsim << root + 1 << "." << pod + 1 << "." 
+			 << aggr + 1 << "." << "2";
+		AddRoute(nc_root2aggr[linkn].Get(0), Seconds(3),
+			 podprefix.str().c_str(), aggrsim.str().c_str());
+
+		/* set route from Aggr to Root Loopback*/
+		std::stringstream rootlo, rootsim;
+		rootlo << ROOTLOPREFIX << root + 1 << "";
+		rootsim << root + 1 << "." << pod + 1 << "." 
+			<< aggr + 1 << "." << "1";
+		AddRoute(nc_root2aggr[linkn].Get(1), Seconds(3),
+			 rootlo.str().c_str(), rootsim.str().c_str());
+
 	}
 	}
 
@@ -198,6 +247,30 @@ main (int argc, char ** argv)
 
 		RunIp(nc_aggr2edge[linkn].Get(0), Seconds(0.21), simup1.str());
 		RunIp(nc_aggr2edge[linkn].Get(1), Seconds(0.21), simup2.str());
+
+
+		/* set route from Aggr to Edge, 
+		 * prefix is Pod+1+200.Edge.0.0/16
+		 */
+		std::stringstream edgeprefix, edgesim;
+		edgeprefix << pod + 1 + 200 << "." << edge + 1 << ".0.0/16";
+		edgesim << pod + 1 + 100 << "." << aggr + 1 << "."
+			<< edge + 1 << "." << "2";
+		AddRoute(nc_aggr2edge[linkn].Get(0), Seconds(3.1),
+			 edgeprefix.str().c_str(), edgesim.str().c_str());
+
+		/* set route from Edge to Aggr, 
+		 * preifx is 250.255.255.(Aggr*KARY2+(0~KARY2+1)) (root lo),
+		 * next hop is Pod+1+100.Aggr+1+Edge+1.1
+		 */
+		for (int rootn = 0; rootn < KARY2; rootn++) {
+			std::stringstream rootlo, aggrsim;
+			rootlo << ROOTLOPREFIX << aggr * KARY2 + rootn + 1;
+			aggrsim << pod + 1 + 100 << "." << aggr + 1 << "."
+				<< edge + 1 << "." << "1";
+			AddRoute(nc_aggr2edge[linkn].Get(1), Seconds(3.1),
+				 rootlo.str().c_str(), aggrsim.str().c_str());
+		}
 	}
 	}
 	}
@@ -242,19 +315,30 @@ main (int argc, char ** argv)
 
 		RunIp(nc_edge2node[linkn].Get(0), Seconds(0.31), simup1.str());
 		RunIp(nc_edge2node[linkn].Get(1), Seconds(0.31), simup2.str());
+
+
+		/* route from edge to node is connected.
+		 * So, default route is set to node.
+		 */
+		std::stringstream droute, edgesim;
+		droute << "0.0.0.0/0";
+		edgesim << pod + 1 + 200 << "." << edge + 1 << "."
+			<< node + 1 << "." << "1";
+		AddRoute(nc_edge2node[linkn].Get(1), Seconds(3.2),
+			 droute.str().c_str(), edgesim.str().c_str());
 	}
 	}
 	}
 
 
 	/* set up loopback addresses of root switches.
-	 * Address is 254.255.255.Root+1 .
+	 * Address is 250.255.255.Root+1 .
 	 */
 
 	for (int root = 0; root < ROOTSWNUM; root++) {
 		std::stringstream loaddr;
 
-		loaddr << root + 1 << ".255.255.255/32";
+		loaddr << ROOTLOPREFIX << root + 1 << "/32";
 		AddLoAddress(rootsw.Get(root), Seconds(0.4),
 			     loaddr.str().c_str());
 	}
@@ -268,7 +352,7 @@ main (int argc, char ** argv)
 		std::stringstream loaddr;
 
 		int aggrn = AGGRSWINPODNUM * pod + aggr;
-		loaddr << pod + 1 << "." << aggr + 1 << ".255.255/32";
+		loaddr << AGGRLOPREFIX << pod + 1 << "." << aggr + 1 << "/32";
 		AddLoAddress(aggrsw.Get(aggrn), Seconds(0.4),
 			     loaddr.str().c_str());
 	}
@@ -280,24 +364,33 @@ main (int argc, char ** argv)
 	as << "addr show";
 	rs << "route show";
 	for (int root = 0; root < ROOTSWNUM; root++) {
-		RunIp(rootsw.Get(root), Seconds(1), as.str());
-		RunIp(rootsw.Get(root), Seconds(2), rs.str());
+		RunIp(rootsw.Get(root), Seconds(5), as.str());
+		RunIp(rootsw.Get(root), Seconds(5.1), rs.str());
 	}
 	for (int aggr = 0; aggr < AGGRSWNUM; aggr++) {
-		RunIp(aggrsw.Get(aggr), Seconds(1), as.str());
-		RunIp(aggrsw.Get(aggr), Seconds(2), rs.str());
+		RunIp(aggrsw.Get(aggr), Seconds(5), as.str());
+		RunIp(aggrsw.Get(aggr), Seconds(5.1), rs.str());
 	}
 	for (int edge = 0; edge < EDGESWNUM; edge++) {
-		RunIp(edgesw.Get(edge), Seconds(1), as.str());
-		RunIp(edgesw.Get(edge), Seconds(2), rs.str());
+		RunIp(edgesw.Get(edge), Seconds(5), as.str());
+		RunIp(edgesw.Get(edge), Seconds(5.1), rs.str());
 	}
 	for (int node = 0; node < NODENUM; node++) {
-		RunIp(nodes.Get(node), Seconds(1), as.str());
-		RunIp(nodes.Get(node), Seconds(2), rs.str());
+		RunIp(nodes.Get(node), Seconds(5), as.str());
+		RunIp(nodes.Get(node), Seconds(5.1), rs.str());
+	}
+
+	/* ping test */
+	int time = 10;
+	for (int root = 0; root < ROOTSWNUM; root++) {
+		std::stringstream rootlo;
+		rootlo << ROOTLOPREFIX << root + 1;
+		RunPing(nodes.Get(0), Seconds(time++),
+			rootlo.str().c_str());
 	}
 
 
-	int stoptime = 10;
+	int stoptime = 30 + NODENUM * ROOTSWNUM;
 
 	if (stoptime != 0) {
 		Simulator::Stop(Seconds(stoptime));
