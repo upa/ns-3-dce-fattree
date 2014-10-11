@@ -1,0 +1,13 @@
+diff --git a/arch/sim/test/Makefile b/arch/sim/test/Makefile
+index 2ec3bbc..7699f6c 100644
+--- a/arch/sim/test/Makefile
++++ b/arch/sim/test/Makefile
+@@ -12,7 +12,7 @@ check_pkgs:
+ testbin: bake check_pkgs
+        @mkdir -p buildtop/build/bin_dce
+        cd buildtop ; \
+-       ../bake/bake.py configure -e dce-linux-inkernel $(BAKECONF_PARAMS)
++       ../bake/bake.py configure -e dce-linux-inkernel -e dce-quagga-dev $(BAKECONF_PARAMS)
+        cd buildtop ; \
+        ../bake/bake.py show --enabledTree | grep -v  -E "pygoocanvas|graphviz|python-dev" | grep Missing && (echo "required pac
+        cd buildtop ; \
