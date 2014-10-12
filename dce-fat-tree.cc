@@ -6,6 +6,7 @@
 #include "ns3/quagga-helper.h"
 #include "ns3/point-to-point-helper.h"
 #include <sys/resource.h>
+#include <list>
 
 using namespace ns3;
 NS_LOG_COMPONENT_DEFINE ("DceFatTree");
@@ -48,7 +49,12 @@ NetDeviceContainer	ndc_edge2node[EDGE2NODELINKS];
 #define ROOTLOPREFIX	"250.255.255."
 #define AGGRLOPREFIX	"250.255."
 
+#define FLOWNUM		20
+#define FLOWDIST	"same"
+#define FLOWLEN		1476
+#define FLOWRANDOM	"-r"
 
+#define FLOWTIME	60
 
 static void
 SetRlimit()
@@ -99,6 +105,7 @@ RunIp(Ptr<Node> node, Time at, std::string str)
 	apps.Start(at);
 }
 
+
 static void
 AddAddress(Ptr<Node> node, Time at, int ifindex, const char *address)
 {
@@ -132,6 +139,112 @@ AddRelay(Ptr<Node> node, Time at, const char *prefix, const char *relay)
 	    << " relay " << relay << " type gre";
 	RunIp(node, at, oss.str());
 }
+
+static void
+RunFlowgen(Ptr<Node> node, Time at, const char *src, const char *dst)
+{
+	DceApplicationHelper process;
+	ApplicationContainer apps;
+
+	std::ostringstream oss;
+
+	oss << " -s " << src << " -d " << dst << " -n " << FLOWNUM
+	    << " -t " << FLOWDIST << " -l " << FLOWLEN << " " << FLOWRANDOM;
+
+	process.SetBinary("flowgen");
+	process.SetStackSize(1 << 16);
+	process.ResetArguments();
+	process.ParseArguments(oss.str().c_str());
+	apps = process.Install(node);
+	apps.Start(at);
+}
+
+
+
+/* Benchmark Suites */
+
+struct npool {
+	int idx;
+	int remain;
+};
+
+int
+pop_random_node(std::list<struct npool> * nodepool)
+{
+        int idx = 0;
+        int n = 0;
+	int len = nodepool->size();
+	int x;
+
+	if (len == 0) {
+		x = 0;
+	} else {
+		x = rand () % len;
+	}
+
+        for (std::list<struct npool>::iterator it = nodepool->begin();
+	     it != nodepool->end(); it++) {
+                if (x == n) {
+                        idx = it->idx;
+			it->remain--;
+			if (it->remain == 0) 
+				nodepool->erase (it);
+
+                        break;
+                }
+		n++;
+        }
+
+        return idx;
+}
+
+int
+BenchRandom (int i)
+{
+	std::list<npool> nodepool;
+
+        srand((unsigned int)time(NULL));
+
+        /* fill node index pool. target node is removed when it's used. */
+        for (int node = 0; node < NODENUM; node++) {
+		struct npool np = { node, i }; 
+                nodepool.push_front (np);
+        }
+
+        for (int node = 0; node < NODENUM; node++) {
+                for (int n = 0; n < i; n++) {
+                        /* pop i nodes from nodepool.*/
+                        int nidx = pop_random_node(&nodepool);
+
+			std::stringstream src, dst;
+			src << (int)(node / NODEINPODNUM) + 1 + 200 << "."
+			    << node % NODEINEDGENUM + 1 << "."
+			    << (int)(node / NODEINEDGENUM) % EDGESWINPODNUM
+				+ 1 << "." << "2";
+
+			dst << (int)(nidx / NODEINPODNUM) + 1 + 200 << "."
+			    << nidx % NODEINEDGENUM + 1 << "."
+			    << (int)(nidx / NODEINEDGENUM) % EDGESWINPODNUM
+				+ 1 << "." << "2";
+
+			
+			printf ("flowgen from %s to %s\n",
+				src.str().c_str(), dst.str().c_str());
+			//RunFlowgen(nodes.Get(node), Seconds(FLOWTIME),
+			//src.str().c_str(), dst.str().c_str());
+                }
+        }
+
+	return 0;
+}
+
+
+static void
+BenchStride(int i)
+{
+	
+}
+
 
 int
 main (int argc, char ** argv)
@@ -454,6 +567,8 @@ main (int argc, char ** argv)
 		RunIp(nodes.Get(node), Seconds(6), "lb show");
 	}
 
+
+	BenchRandom(1);
 
 	int stoptime = 120;
 
