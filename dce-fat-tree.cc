@@ -124,6 +124,15 @@ AddRoute(Ptr<Node> node, Time at, const char *dst, const char *next)
 	RunIp(node, at, oss.str());
 }
 
+static void
+AddRelay(Ptr<Node> node, Time at, const char *prefix, const char *relay)
+{
+	std::ostringstream oss;
+	oss << "lb add prefix " << prefix
+	    << " relay " << relay << " type gre";
+	RunIp(node, at, oss.str());
+}
+
 int
 main (int argc, char ** argv)
 {
@@ -383,6 +392,42 @@ main (int argc, char ** argv)
 	}
 
 
+
+	/* set up iplb prefix */
+	for (int pod = 0; pod < PODNUM; pod++) {
+	for (int edge = 0; edge < EDGESWINPODNUM; edge++) {
+	for (int node = 0; node < NODEINEDGENUM; node++) {
+
+		int edgen = EDGESWINPODNUM * pod + edge;
+		int noden = NODEINPODNUM * pod + NODEINEDGENUM * edge + node;
+
+		/* set up inter-pod prefix = 0.0.0.0 among rootsw */
+		for (int root = 0; root < ROOTSWNUM; root++) {
+			std::stringstream rootlo;
+			rootlo << ROOTLOPREFIX << root + 1;
+			AddRelay(nodes.Get(noden), Seconds(0.5),
+				 "0.0.0.0/0", rootlo.str().c_str());
+		}
+		
+		/* set up inner-pod prefixes */
+		for (int aggr = 0; aggr < AGGRSWINPODNUM; aggr++) {
+			std::stringstream prefix, relay;
+			if (aggr == edge) {
+				/* own prefix */
+				continue;
+			}
+			prefix << pod + 1 + 200 << "."
+			       << aggr + 1 << ".0.0/16";
+			relay << AGGRLOPREFIX << pod + 1 << "." << aggr + 1;
+			AddRelay(nodes.Get(noden), Seconds(0.51),
+				 prefix.str().c_str(), relay.str().c_str());
+		}
+
+	}
+	}
+	}
+
+
 	/* ifconfig and ip route show */
 	std::stringstream as, rs;
 	as << "addr show";
@@ -402,6 +447,11 @@ main (int argc, char ** argv)
 	for (int node = 0; node < NODENUM; node++) {
 		RunIp(nodes.Get(node), Seconds(5), as.str());
 		RunIp(nodes.Get(node), Seconds(5.1), rs.str());
+	}
+
+	/* ip lb show  */
+	for (int node = 0; node < NODENUM; node++) {
+		RunIp(nodes.Get(node), Seconds(6), "lb show");
 	}
 
 
