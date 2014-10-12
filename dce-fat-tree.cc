@@ -23,6 +23,8 @@ NS_LOG_COMPONENT_DEFINE ("DceFatTree");
 #define EDGESWNUM	(EDGESWINPODNUM * PODNUM)
 #define NODENUM		(NODEINPODNUM * PODNUM)
 
+#define ROOTROOTSW	0	/* Root of Shortest Path Tree for default */
+#define ROOTAGGRSW	0	/* Aggr of Shortest Path Tree for default */
 
 #define ROOT2AGGRLINKS	(ROOTSWNUM * PODNUM)
 #define AGGR2EDGELINKS	(AGGRSWINPODNUM * EDGESWINPODNUM * PODNUM)
@@ -75,8 +77,9 @@ RunPing(Ptr<Node> node, Time at, const char *target)
 	DceApplicationHelper process;
 	ApplicationContainer apps;
 	process.SetBinary("ping");
-	process.SetStackSize(1 << 16);
+	process.SetStackSize(1 << 20);
 	process.ResetArguments();
+	process.ResetEnvironment();
 	process.ParseArguments(oss.str().c_str());
 	apps = process.Install(node);
 	apps.Start(at);
@@ -204,8 +207,15 @@ main (int argc, char ** argv)
 		AddRoute(nc_root2aggr[linkn].Get(1), Seconds(0.12),
 			 rootlo.str().c_str(), rootsim.str().c_str());
 
+		/* set up default route from Aggr to Root of Shortest Path */
+		if (root == ROOTROOTSW) {
+			AddRoute(nc_root2aggr[linkn].Get(1), Seconds(0.13),
+				 "0.0.0.0/0", rootsim.str().c_str());
+		}
 	}
 	}
+
+
 
 	/* set up Links between Aggrsw and Root sw */
 	for (int pod = 0; pod < PODNUM; pod++) {
@@ -271,6 +281,15 @@ main (int argc, char ** argv)
 				<< edge + 1 << "." << "1";
 			AddRoute(nc_aggr2edge[linkn].Get(1), Seconds(0.22),
 				 rootlo.str().c_str(), aggrsim.str().c_str());
+		}
+
+		/* set up default route from Edge to Aggr of Shortest Path */
+		if (aggr == ROOTAGGRSW) {
+			std::stringstream aggrsim;
+			aggrsim << pod + 1 + 100 << "." << aggr + 1 << "."
+				<< edge + 1 << "." << "1";
+			AddRoute(nc_aggr2edge[linkn].Get(1), Seconds(0.23),
+				 "0.0.0.0/0", aggrsim.str().c_str());
 		}
 	}
 	}
@@ -383,16 +402,6 @@ main (int argc, char ** argv)
 	for (int node = 0; node < NODENUM; node++) {
 		RunIp(nodes.Get(node), Seconds(5), as.str());
 		RunIp(nodes.Get(node), Seconds(5.1), rs.str());
-	}
-
-	/* ping test */
-	float time = 0.5;
-	for (int root = 0; root < ROOTSWNUM; root++) {
-		std::stringstream rootlo;
-		rootlo << ROOTLOPREFIX << root + 1;
-		RunPing(nodes.Get(0), Seconds(6.0 + time),
-			rootlo.str().c_str());
-		time += 2.0;
 	}
 
 
