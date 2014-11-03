@@ -54,12 +54,13 @@ NetDeviceContainer	ndc_edge2node[EDGE2NODELINKS];
 
 #define FLOWNUM		20
 #define FLOWDIST	"same"
-#define FLOWLEN		1024
+#define FLOWLEN		64
 #define FLOWRANDOM	"-r"
 //#define FLOWCOUNT	16777216
-#define FLOWCOUNT	150
+#define FLOWCOUNT	16777216
 
 #define FLOWTIME	30
+#define FLOWDURATION	3
 
 static void
 SetRlimit()
@@ -149,7 +150,7 @@ AddRelay(Ptr<Node> node, Time at, const char *prefix, const char *relay)
 }
 
 static void
-RunFlowgen(Ptr<Node> node, Time at, const char *src, const char *dst)
+RunFlowgen(Ptr<Node> node, int at, const char *src, const char *dst)
 {
 	DceApplicationHelper process;
 	ApplicationContainer apps;
@@ -158,18 +159,36 @@ RunFlowgen(Ptr<Node> node, Time at, const char *src, const char *dst)
 
 	oss << " -s " << src << " -d " << dst << " -n " << FLOWNUM
 	    << " -t " << FLOWDIST << " -l " << FLOWLEN << " " << FLOWRANDOM
-	    << " -c " << FLOWCOUNT << " -v -u";
+	    << " -c " << FLOWCOUNT << " -i 100";
 
 	process.SetBinary("flowgen");
-	process.SetStackSize(1 << 16);
+	process.SetStackSize(1 << 20);
 	process.ResetArguments();
 	process.ParseArguments(oss.str().c_str());
 	apps = process.Install(node);
-	apps.Start(at);
+	apps.Start(Seconds (at));
+	//apps.Stop(Seconds (at + FLOWDURATION));
 }
 
 static void
-RunFlowgenRecv(Ptr<Node> node, Time at)
+RunIperf(Ptr<Node> node, int at, const char * src, const char * dst)
+{
+	DceApplicationHelper process;
+	ApplicationContainer apps;
+
+	std::ostringstream oss;
+	oss << "-c " << dst << " -i 1 --time 10 -u -b " << LINKSPEED;
+	
+	process.SetBinary("iperf");
+	process.SetStackSize(1 << 20);
+	process.ResetArguments();
+	process.ParseArguments(oss.str().c_str());
+	apps = process.Install(node);
+	apps.Start(Seconds(at));
+}
+
+static void
+RunFlowgenRecv(Ptr<Node> node, int at)
 {
 	DceApplicationHelper process;
 	ApplicationContainer apps;
@@ -178,11 +197,28 @@ RunFlowgenRecv(Ptr<Node> node, Time at)
 	oss << " -e -v";
 
 	process.SetBinary("flowgen");
-	process.SetStackSize(1 << 16);
+	process.SetStackSize(1 << 20);
 	process.ResetArguments();
 	process.ParseArguments(oss.str().c_str());
 	apps = process.Install(node);
-	apps.Start(at);
+	apps.Start(Seconds(at));
+}
+
+static void
+RunIperfRecv(Ptr<Node> node, int at)
+{
+	DceApplicationHelper process;
+	ApplicationContainer apps;
+
+	std::ostringstream oss;
+	oss << "-s -P 1 -u";
+
+	process.SetBinary("iperf");
+	process.SetStackSize(1 << 20);
+	process.ResetArguments();
+	process.ParseArguments(oss.str().c_str());
+	apps = process.Install(node);
+	apps.Start(Seconds(at));
 }
 
 
@@ -256,7 +292,7 @@ BenchRandom (int i)
 			
 			printf ("flowgen from %s to %s\n",
 				src.str().c_str(), dst.str().c_str());
-			RunFlowgen(nodes.Get(node), Seconds(FLOWTIME),
+			RunFlowgen(nodes.Get(node), FLOWTIME,
 			src.str().c_str(), dst.str().c_str());
 		}
 	}
@@ -303,9 +339,9 @@ BenchRandom_half_duplex ()
 		printf ("flowgen from idx %d:%s to idx %d:%s\n",
 			sidx, src.str().c_str(), didx, dst.str().c_str());
 
-		RunFlowgen(nodes.Get(sidx), Seconds(FLOWTIME + 3),
+		RunFlowgen(nodes.Get(sidx), FLOWTIME + 3,
 		src.str().c_str(), dst.str().c_str());
-		RunFlowgenRecv(nodes.Get(didx), Seconds(FLOWTIME));
+		RunFlowgenRecv(nodes.Get(didx), FLOWTIME);
 	}
 
 	return 0;
@@ -322,7 +358,7 @@ int
 main (int argc, char ** argv)
 {
 
-	int pcap = 1;
+	int pcap = 0;
 	int ospf = 0;
 
 	SetRlimit();
@@ -360,7 +396,7 @@ main (int argc, char ** argv)
 		if (pcap)
 			p2p.EnablePcapAll ("fat-tree-r-a");
 		p2p.SetDeviceAttribute("DataRate", StringValue (LINKSPEED));
-		p2p.SetChannelAttribute("Delay", StringValue ("0.1ms"));
+		p2p.SetChannelAttribute("Delay", StringValue ("1ms"));
 
 		nc_root2aggr[linkn] = NodeContainer(rootsw.Get(root),
 						    aggrsw.Get(aggrn));
@@ -434,7 +470,7 @@ main (int argc, char ** argv)
 		if (pcap)
 			p2p.EnablePcapAll ("fat-tree-a-e");
 		p2p.SetDeviceAttribute("DataRate", StringValue(LINKSPEED));
-		p2p.SetChannelAttribute("Delay", StringValue("0.1ms"));
+		p2p.SetChannelAttribute("Delay", StringValue("1ms"));
 
 		nc_aggr2edge[linkn] = NodeContainer(aggrsw.Get(aggrn),
 						    edgesw.Get(edgen));
@@ -518,7 +554,7 @@ main (int argc, char ** argv)
 		if (pcap)
 			p2p.EnablePcapAll ("fat-tree-e-n");
 		p2p.SetDeviceAttribute("DataRate", StringValue(LINKSPEED));
-		p2p.SetChannelAttribute("Delay", StringValue("0.1ms"));
+		p2p.SetChannelAttribute("Delay", StringValue("1ms"));
 
 		nc_edge2node[linkn] = NodeContainer(edgesw.Get(edgen),
 						    nodes.Get(noden));
@@ -704,13 +740,15 @@ main (int argc, char ** argv)
 		RunIp(nodes.Get(node), Seconds(10), "lb show");
 	}
 
-	//BenchRandom_half_duplex();
+	BenchRandom_half_duplex();
+#if 0
 	std::stringstream src, dst;
 	IDX2ADDR(0, src);
 	IDX2ADDR(1, dst);
-	RunFlowgen(nodes.Get(0), Seconds(FLOWTIME),
+	RunFlowgen(nodes.Get(0), FLOWTIME,
 		   src.str().c_str(), dst.str().c_str());
-	RunFlowgenRecv(nodes.Get(1), Seconds(FLOWTIME - 3));
+	RunFlowgenRecv(nodes.Get(1), FLOWTIME - 3);
+#endif
 
 	int stoptime = 60;
 
