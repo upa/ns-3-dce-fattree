@@ -5,6 +5,7 @@
 #include "ns3/dce-module.h"
 #include "ns3/quagga-helper.h"
 #include "ns3/point-to-point-helper.h"
+#include "ns3/quagga-helper.h"
 #include <sys/resource.h>
 #include <list>
 
@@ -31,6 +32,8 @@ NS_LOG_COMPONENT_DEFINE ("DceFatTree");
 #define AGGR2EDGELINKS	(AGGRSWINPODNUM * EDGESWINPODNUM * PODNUM)
 #define EDGE2NODELINKS	(NODENUM)
 
+#define LINKSPEED "10Mbps"
+
 NodeContainer	rootsw;
 NodeContainer	aggrsw;
 NodeContainer	edgesw;
@@ -51,10 +54,12 @@ NetDeviceContainer	ndc_edge2node[EDGE2NODELINKS];
 
 #define FLOWNUM		20
 #define FLOWDIST	"same"
-#define FLOWLEN		1476
+#define FLOWLEN		1024
 #define FLOWRANDOM	"-r"
+//#define FLOWCOUNT	16777216
+#define FLOWCOUNT	150
 
-#define FLOWTIME	60
+#define FLOWTIME	30
 
 static void
 SetRlimit()
@@ -107,10 +112,13 @@ RunIp(Ptr<Node> node, Time at, std::string str)
 
 
 static void
-AddAddress(Ptr<Node> node, Time at, int ifindex, const char *address)
+AddAddress(Ptr<Node> node, Time at, int ifindex, const char *address,
+	   const char * baddr)
 {
 	std::ostringstream oss;
-	oss << "-f inet addr add " << address << " dev sim" << ifindex;
+	oss << "-f inet addr add " << address
+	    << " broadcast " << baddr
+	    << " dev sim" << ifindex;
 	RunIp(node, at, oss.str());
 }
 
@@ -149,7 +157,25 @@ RunFlowgen(Ptr<Node> node, Time at, const char *src, const char *dst)
 	std::ostringstream oss;
 
 	oss << " -s " << src << " -d " << dst << " -n " << FLOWNUM
-	    << " -t " << FLOWDIST << " -l " << FLOWLEN << " " << FLOWRANDOM;
+	    << " -t " << FLOWDIST << " -l " << FLOWLEN << " " << FLOWRANDOM
+	    << " -c " << FLOWCOUNT << " -v -u";
+
+	process.SetBinary("flowgen");
+	process.SetStackSize(1 << 16);
+	process.ResetArguments();
+	process.ParseArguments(oss.str().c_str());
+	apps = process.Install(node);
+	apps.Start(at);
+}
+
+static void
+RunFlowgenRecv(Ptr<Node> node, Time at)
+{
+	DceApplicationHelper process;
+	ApplicationContainer apps;
+
+	std::ostringstream oss;
+	oss << " -e -v";
 
 	process.SetBinary("flowgen");
 	process.SetStackSize(1 << 16);
@@ -171,8 +197,8 @@ struct npool {
 int
 pop_random_node(std::list<struct npool> * nodepool)
 {
-        int idx = 0;
-        int n = 0;
+	int idx = 0;
+	int n = 0;
 	int len = nodepool->size();
 	int x;
 
@@ -182,20 +208,20 @@ pop_random_node(std::list<struct npool> * nodepool)
 		x = rand () % len;
 	}
 
-        for (std::list<struct npool>::iterator it = nodepool->begin();
+	for (std::list<struct npool>::iterator it = nodepool->begin();
 	     it != nodepool->end(); it++) {
-                if (x == n) {
-                        idx = it->idx;
+		if (x == n) {
+			idx = it->idx;
 			it->remain--;
 			if (it->remain == 0) 
 				nodepool->erase (it);
 
-                        break;
-                }
+			break;
+		}
 		n++;
-        }
+	}
 
-        return idx;
+	return idx;
 }
 
 int
@@ -203,18 +229,18 @@ BenchRandom (int i)
 {
 	std::list<npool> nodepool;
 
-        srand((unsigned int)time(NULL));
+	srand((unsigned int)time(NULL));
 
-        /* fill node index pool. target node is removed when it's used. */
-        for (int node = 0; node < NODENUM; node++) {
+	/* fill node index pool. target node is removed when it's used. */
+	for (int node = 0; node < NODENUM; node++) {
 		struct npool np = { node, i }; 
-                nodepool.push_front (np);
-        }
+		nodepool.push_front (np);
+	}
 
-        for (int node = 0; node < NODENUM; node++) {
-                for (int n = 0; n < i; n++) {
-                        /* pop i nodes from nodepool.*/
-                        int nidx = pop_random_node(&nodepool);
+	for (int node = 0; node < NODENUM; node++) {
+		for (int n = 0; n < i; n++) {
+			/* pop i nodes from nodepool.*/
+			int nidx = pop_random_node(&nodepool);
 
 			std::stringstream src, dst;
 			src << (int)(node / NODEINPODNUM) + 1 + 200 << "."
@@ -230,14 +256,60 @@ BenchRandom (int i)
 			
 			printf ("flowgen from %s to %s\n",
 				src.str().c_str(), dst.str().c_str());
-			//RunFlowgen(nodes.Get(node), Seconds(FLOWTIME),
-			//src.str().c_str(), dst.str().c_str());
-                }
-        }
+			RunFlowgen(nodes.Get(node), Seconds(FLOWTIME),
+			src.str().c_str(), dst.str().c_str());
+		}
+	}
 
 	return 0;
 }
 
+#define IDX2ADDR(idx, addr)	\
+	(addr) << (idx / NODEINPODNUM) + 1 + 200 << "."	\
+	       << (idx / NODEINEDGENUM) % NODEINEDGENUM  + 1 << "."	\
+	       << idx % EDGESWINPODNUM + 1	\
+	       << "." << "2"	\
+
+int
+BenchRandom_half_duplex ()
+{
+	std::list<npool> nodepool;
+
+	srand((unsigned int)time(NULL));
+
+	/* fill node index pool. target node is removed when it's used. */
+	for (int node = 0; node < NODENUM; node++) {
+		struct npool np = { node, 1 };
+		nodepool.push_front (np);
+	}
+
+	for (int node = 0; node < NODENUM / 2; node++) {
+		/* pop src and dst */
+		int sidx = pop_random_node(&nodepool);
+		int didx = pop_random_node(&nodepool);
+
+		std::stringstream src, dst;
+		src << (sidx / NODEINPODNUM) + 1 + 200 << "."
+		    << (sidx / NODEINEDGENUM) % NODEINEDGENUM  + 1 << "."
+		    << sidx % EDGESWINPODNUM + 1
+		    << "." << "2";
+
+		dst << (didx / NODEINPODNUM) + 1 + 200 << "."
+		    << (didx / NODEINEDGENUM) % NODEINEDGENUM  + 1 << "."
+		    << didx % EDGESWINPODNUM + 1
+		    << "." << "2";
+
+
+		printf ("flowgen from idx %d:%s to idx %d:%s\n",
+			sidx, src.str().c_str(), didx, dst.str().c_str());
+
+		RunFlowgen(nodes.Get(sidx), Seconds(FLOWTIME + 3),
+		src.str().c_str(), dst.str().c_str());
+		RunFlowgenRecv(nodes.Get(didx), Seconds(FLOWTIME));
+	}
+
+	return 0;
+}
 
 static void
 BenchStride(int i)
@@ -249,6 +321,9 @@ BenchStride(int i)
 int
 main (int argc, char ** argv)
 {
+
+	int pcap = 1;
+	int ospf = 0;
 
 	SetRlimit();
 
@@ -282,14 +357,16 @@ main (int argc, char ** argv)
 		int aggrn = AGGRSWINPODNUM * pod + aggr;
 
 		PointToPointHelper p2p;
-		p2p.SetDeviceAttribute("DataRate", StringValue ("1000Mbps"));
+		if (pcap)
+			p2p.EnablePcapAll ("fat-tree-r-a");
+		p2p.SetDeviceAttribute("DataRate", StringValue (LINKSPEED));
 		p2p.SetChannelAttribute("Delay", StringValue ("0.1ms"));
 
 		nc_root2aggr[linkn] = NodeContainer(rootsw.Get(root),
 						    aggrsw.Get(aggrn));
 		ndc_root2aggr[linkn] = p2p.Install(nc_root2aggr[linkn]);
 			
-		std::stringstream simup1, simup2, simaddr1, simaddr2;
+		std::stringstream simup1, simup2, simaddr1, simaddr2, b;
 
 		simup1 << "link set sim" 
 		       << ndc_root2aggr[linkn].Get(0)->GetIfIndex() << " up";
@@ -301,19 +378,22 @@ main (int argc, char ** argv)
 			 << aggr + 1 << "." << "1/24";
 		simaddr2 << root + 1 << "." << pod + 1 << "." 
 			 << aggr + 1 << "." << "2/24";
+		b << root + 1 << "." << pod + 1 << "." 
+		  << aggr + 1 << "." << "255";
 
 		AddAddress(nc_root2aggr[linkn].Get(0), Seconds(0.1),
 			   ndc_root2aggr[linkn].Get(0)->GetIfIndex(),
-			   simaddr1.str().c_str());
+			   simaddr1.str().c_str(), b.str().c_str());
 		AddAddress(nc_root2aggr[linkn].Get(1), Seconds(0.1),
 			   ndc_root2aggr[linkn].Get(1)->GetIfIndex(),
-			   simaddr2.str().c_str());
+			   simaddr2.str().c_str(), b.str().c_str());
 
 		RunIp(nc_root2aggr[linkn].Get(0), Seconds(0.11), simup1.str());
 		RunIp(nc_root2aggr[linkn].Get(1), Seconds(0.11), simup2.str());
 
 
 		/* set route from Root to Aggr prefix is Pod+1+200.0.0.0/8 */
+		if (!ospf) {
 		std::stringstream podprefix, aggrsim;
 		podprefix << pod + 1 + 200 << ".0.0.0/8";
 		aggrsim << root + 1 << "." << pod + 1 << "." 
@@ -334,6 +414,7 @@ main (int argc, char ** argv)
 			AddRoute(nc_root2aggr[linkn].Get(1), Seconds(0.13),
 				 "0.0.0.0/0", rootsim.str().c_str());
 		}
+		}
 	}
 	}
 
@@ -350,14 +431,16 @@ main (int argc, char ** argv)
 		int edgen = EDGESWINPODNUM * pod + edge;
 			
 		PointToPointHelper p2p;
-		p2p.SetDeviceAttribute("DataRate", StringValue("1000Mbps"));
+		if (pcap)
+			p2p.EnablePcapAll ("fat-tree-a-e");
+		p2p.SetDeviceAttribute("DataRate", StringValue(LINKSPEED));
 		p2p.SetChannelAttribute("Delay", StringValue("0.1ms"));
 
 		nc_aggr2edge[linkn] = NodeContainer(aggrsw.Get(aggrn),
 						    edgesw.Get(edgen));
 		ndc_aggr2edge[linkn] = p2p.Install(nc_aggr2edge[linkn]);
 		
-		std::stringstream simup1, simup2, simaddr1, simaddr2;
+		std::stringstream simup1, simup2, simaddr1, simaddr2, b;
 		
 		simup1 << "link set sim"
 		       << ndc_aggr2edge[linkn].Get(0)->GetIfIndex() << " up";
@@ -369,18 +452,21 @@ main (int argc, char ** argv)
 			 << edge + 1 << "." << "1/24";
 		simaddr2 << pod + 1 + 100 << "." << aggr + 1 << "."
 			 << edge + 1 << "." << "2/24";
+		b << pod + 1 + 100 << "." << aggr + 1 << "."
+		  << edge + 1 << "." << "255";
 
 		AddAddress(nc_aggr2edge[linkn].Get(0), Seconds(0.2),
 			   ndc_aggr2edge[linkn].Get(0)->GetIfIndex(),
-			   simaddr1.str().c_str());
+			   simaddr1.str().c_str(), b.str().c_str());
 		AddAddress(nc_aggr2edge[linkn].Get(1), Seconds(0.2),
 			   ndc_aggr2edge[linkn].Get(1)->GetIfIndex(),
-			   simaddr2.str().c_str());
+			   simaddr2.str().c_str(), b.str().c_str());
 
 		RunIp(nc_aggr2edge[linkn].Get(0), Seconds(0.21), simup1.str());
 		RunIp(nc_aggr2edge[linkn].Get(1), Seconds(0.21), simup2.str());
 
 
+		if (!ospf) {
 		/* set route from Aggr to Edge, 
 		 * prefix is Pod+1+200.Edge.0.0/16
 		 */
@@ -413,6 +499,7 @@ main (int argc, char ** argv)
 			AddRoute(nc_aggr2edge[linkn].Get(1), Seconds(0.23),
 				 "0.0.0.0/0", aggrsim.str().c_str());
 		}
+		}
 	}
 	}
 	}
@@ -428,14 +515,16 @@ main (int argc, char ** argv)
 		int noden = NODEINPODNUM * pod + NODEINEDGENUM * edge + node;
 
 		PointToPointHelper p2p;
-		p2p.SetDeviceAttribute("DataRate", StringValue("1000Mbps"));
+		if (pcap)
+			p2p.EnablePcapAll ("fat-tree-e-n");
+		p2p.SetDeviceAttribute("DataRate", StringValue(LINKSPEED));
 		p2p.SetChannelAttribute("Delay", StringValue("0.1ms"));
 
 		nc_edge2node[linkn] = NodeContainer(edgesw.Get(edgen),
 						    nodes.Get(noden));
 		ndc_edge2node[linkn] = p2p.Install(nc_edge2node[linkn]);
 
-		std::stringstream simup1, simup2, simaddr1, simaddr2;
+		std::stringstream simup1, simup2, simaddr1, simaddr2, b;
 
 		simup1 << "link set sim"
 		       << ndc_edge2node[linkn].Get(0)->GetIfIndex() << " up";
@@ -447,20 +536,32 @@ main (int argc, char ** argv)
 			 << node + 1 << "." << "1/24";
 		simaddr2 << pod + 1 + 200 << "." << edge + 1 << "."
 			 << node + 1 << "." << "2/24";
+		b << pod + 1 + 200 << "." << edge + 1 << "."
+		  << node + 1 << "." << "255";
+
+		std::stringstream tmp;
+                tmp << (noden / NODEINPODNUM) + 1 + 200 << "."
+                    << (noden / NODEINEDGENUM) % NODEINEDGENUM  + 1 << "."
+                    << noden % EDGESWINPODNUM + 1
+                    << "." << "2";
+
+		printf ("noden %d is %s %s\n", noden, simaddr2.str().c_str(),
+			tmp.str().c_str());
+		
 		
 		AddAddress(nc_edge2node[linkn].Get(0), Seconds(0.3),
 			   ndc_edge2node[linkn].Get(0)->GetIfIndex(),
-			   simaddr1.str().c_str());
+			   simaddr1.str().c_str(), b.str().c_str());
 		AddAddress(nc_edge2node[linkn].Get(1), Seconds(0.3),
 			   ndc_edge2node[linkn].Get(1)->GetIfIndex(),
-			   simaddr2.str().c_str());
+			   simaddr2.str().c_str(), b.str().c_str());
 
 		RunIp(nc_edge2node[linkn].Get(0), Seconds(0.31), simup1.str());
 		RunIp(nc_edge2node[linkn].Get(1), Seconds(0.31), simup2.str());
 
 
 		/* route from edge to node is connected.
-		 * So, default route is set to node.
+		 * So, default route to edge sw is set to node.
 		 */
 		std::stringstream droute, edgesim;
 		droute << "0.0.0.0/0";
@@ -505,7 +606,7 @@ main (int argc, char ** argv)
 	}
 
 
-
+#if 0
 	/* set up iplb prefix */
 	for (int pod = 0; pod < PODNUM; pod++) {
 	for (int edge = 0; edge < EDGESWINPODNUM; edge++) {
@@ -539,42 +640,90 @@ main (int argc, char ** argv)
 	}
 	}
 	}
+#endif
 
+	/* set lo up */
+	std::stringstream lu;
+	lu << "link set dev lo up";
+	for (int root = 0; root < ROOTSWNUM; root++) {
+		RunIp(rootsw.Get(root), Seconds(2), lu.str());
+	}
+	for (int aggr = 0; aggr < AGGRSWNUM; aggr++) {
+		RunIp(aggrsw.Get(aggr), Seconds(2), lu.str());
+	}
+	for (int edge = 0; edge < EDGESWNUM; edge++) {
+		RunIp(edgesw.Get(edge), Seconds(2), lu.str());
+	}
+	for (int node = 0; node < NODENUM; node++) {
+		RunIp(nodes.Get(node), Seconds(2), lu.str());
+	}
+
+	/* run OSPF */
+
+	if (ospf) {
+		QuaggaHelper quagga;
+		quagga.EnableOspf (rootsw, "0.0.0.0/0");
+		//quagga.EnableOspfDebug (rootsw);
+		//quagga.EnableZebraDebug (rootsw);
+		quagga.Install (rootsw);
+
+		quagga.EnableOspf (aggrsw, "0.0.0.0/0");
+		//quagga.EnableOspfDebug (aggrsw);
+		//quagga.EnableZebraDebug (aggrsw);
+		quagga.Install (aggrsw);
+
+		quagga.EnableOspf (edgesw, "0.0.0.0/0");
+		//quagga.EnableOspfDebug (edgesw);
+		//quagga.EnableZebraDebug (edgesw);
+		quagga.Install (edgesw);
+	}
 
 	/* ifconfig and ip route show */
 	std::stringstream as, rs;
 	as << "addr show";
 	rs << "route show";
 	for (int root = 0; root < ROOTSWNUM; root++) {
-		RunIp(rootsw.Get(root), Seconds(5), as.str());
-		RunIp(rootsw.Get(root), Seconds(5.1), rs.str());
+		RunIp(rootsw.Get(root), Seconds(8), as.str());
+		RunIp(rootsw.Get(root), Seconds(8.1), rs.str());
 	}
 	for (int aggr = 0; aggr < AGGRSWNUM; aggr++) {
-		RunIp(aggrsw.Get(aggr), Seconds(5), as.str());
-		RunIp(aggrsw.Get(aggr), Seconds(5.1), rs.str());
+		RunIp(aggrsw.Get(aggr), Seconds(8), as.str());
+		RunIp(aggrsw.Get(aggr), Seconds(8.1), rs.str());
 	}
 	for (int edge = 0; edge < EDGESWNUM; edge++) {
-		RunIp(edgesw.Get(edge), Seconds(5), as.str());
-		RunIp(edgesw.Get(edge), Seconds(5.1), rs.str());
+		RunIp(edgesw.Get(edge), Seconds(8), as.str());
+		RunIp(edgesw.Get(edge), Seconds(8.1), rs.str());
 	}
 	for (int node = 0; node < NODENUM; node++) {
-		RunIp(nodes.Get(node), Seconds(5), as.str());
-		RunIp(nodes.Get(node), Seconds(5.1), rs.str());
+		RunIp(nodes.Get(node), Seconds(8), as.str());
+		RunIp(nodes.Get(node), Seconds(8.1), rs.str());
 	}
 
 	/* ip lb show  */
 	for (int node = 0; node < NODENUM; node++) {
-		RunIp(nodes.Get(node), Seconds(6), "lb show");
+		RunIp(nodes.Get(node), Seconds(10), "lb show");
 	}
 
+	//BenchRandom_half_duplex();
+	std::stringstream src, dst;
+	IDX2ADDR(0, src);
+	IDX2ADDR(1, dst);
+	RunFlowgen(nodes.Get(0), Seconds(FLOWTIME),
+		   src.str().c_str(), dst.str().c_str());
+	RunFlowgenRecv(nodes.Get(1), Seconds(FLOWTIME - 3));
 
-	BenchRandom(1);
-
-	int stoptime = 120;
+	int stoptime = 60;
 
 	if (stoptime != 0) {
 		Simulator::Stop(Seconds(stoptime));
 	}
+
+
+	/* show packet counter */
+	for (int node = 0; node < NODENUM; node++) {
+		RunIp(nodes.Get(node), Seconds (60), "-s link");
+	}
+
 
 	Simulator::Run();
 	Simulator::Destroy();
