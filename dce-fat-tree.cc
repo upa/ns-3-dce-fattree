@@ -6,6 +6,13 @@
 #include "ns3/quagga-helper.h"
 #include "ns3/point-to-point-helper.h"
 #include "ns3/quagga-helper.h"
+
+#include "ns3/trace-helper.h"
+#include "ns3/flow-classifier.h"
+#include "ns3/flow-monitor-helper.h"
+#include "ns3/flow-monitor-module.h"
+
+
 #include <sys/resource.h>
 #include <list>
 
@@ -32,7 +39,7 @@ NS_LOG_COMPONENT_DEFINE ("DceFatTree");
 #define AGGR2EDGELINKS	(AGGRSWINPODNUM * EDGESWINPODNUM * PODNUM)
 #define EDGE2NODELINKS	(NODENUM)
 
-#define LINKSPEED "10Mbps"
+#define LINKSPEED "1Mbps"
 
 NodeContainer	rootsw;
 NodeContainer	aggrsw;
@@ -57,7 +64,7 @@ NetDeviceContainer	ndc_edge2node[EDGE2NODELINKS];
 #define FLOWLEN		64
 #define FLOWRANDOM	"-r"
 //#define FLOWCOUNT	16777216
-#define FLOWCOUNT	16777216
+#define FLOWCOUNT	65536
 
 #define FLOWTIME	30
 #define FLOWDURATION	3
@@ -159,7 +166,7 @@ RunFlowgen(Ptr<Node> node, int at, const char *src, const char *dst)
 
 	oss << " -s " << src << " -d " << dst << " -n " << FLOWNUM
 	    << " -t " << FLOWDIST << " -l " << FLOWLEN << " " << FLOWRANDOM
-	    << " -c " << FLOWCOUNT << " -i 100";
+	    << " -c " << FLOWCOUNT << " -i 100 -m " << time (NULL) << " -v";
 
 	process.SetBinary("flowgen");
 	process.SetStackSize(1 << 20);
@@ -354,12 +361,63 @@ BenchStride(int i)
 }
 
 
+unsigned long mactxdrop_cnt = 0;
+unsigned long phytxdrop_cnt = 0;
+unsigned long macrxdrop_cnt = 0;
+unsigned long phyrxdrop_cnt = 0;
+unsigned long mactx_cnt = 0;
+unsigned long macrx_cnt = 0;
+
+void
+trace_mactxdrop (std::string path, Ptr<const Packet> packet)
+{
+	mactxdrop_cnt++;
+	return;
+}
+
+void
+trace_phytxdrop (std::string path, Ptr<const Packet> packet)
+{
+	phytxdrop_cnt++;
+	return;
+}
+
+void
+trace_macrxdrop (std::string path, Ptr<const Packet> packet)
+{
+	macrxdrop_cnt++;
+	return;
+}
+
+void
+trace_phyrxdrop (std::string path, Ptr<const Packet> packet)
+{
+	phyrxdrop_cnt++;
+	return;
+}
+
+void
+trace_mactx (std::string path, Ptr<const Packet> packet)
+{
+	mactx_cnt++;
+	return;
+}
+
+void
+trace_macrx (std::string path, Ptr<const Packet> packet)
+{
+	macrx_cnt++;
+	return;
+}
+
+
 int
 main (int argc, char ** argv)
 {
 
 	int pcap = 0;
 	int ospf = 0;
+	int flow = 1;
 
 	SetRlimit();
 
@@ -678,6 +736,37 @@ main (int argc, char ** argv)
 	}
 #endif
 
+	/* set packet counter trace */
+	for (int n; n < NODENUM; n++) {
+		std::ostringstream oss, mactx, phytx, macrx, phyrx;
+		std::ostringstream mactxall, macrxall;
+
+#define TRACE(s, p) s << "/NodeList/" << nodes.Get(n)->GetId()		\
+		      << "/DeviceList/"					\
+		      << nodes.Get(n)->GetDevice(0)->GetIfIndex()	\
+		      << "/$ns3::PointToPointNetDevice/" << p
+
+		TRACE(mactx, "MacTxDrop");
+		Config::Connect (mactx.str(), MakeCallback(&trace_mactxdrop));
+
+		TRACE(phytx, "PhyTxDrop");
+		Config::Connect (phytx.str(), MakeCallback(&trace_phytxdrop));
+	
+		TRACE(macrx, "MacRxDrop");
+		Config::Connect (macrx.str(), MakeCallback(&trace_macrxdrop));
+
+		TRACE(phyrx, "PhyRxDrop");
+		Config::Connect (phyrx.str(), MakeCallback(&trace_phyrxdrop));
+
+		TRACE(mactxall, "PhyTxEnd");
+		Config::Connect (mactxall.str(), MakeCallback(&trace_mactx));
+
+		TRACE(macrxall, "PhyRxEnd");
+		Config::Connect (macrxall.str(), MakeCallback(&trace_macrx));
+	}
+
+
+
 	/* set lo up */
 	std::stringstream lu;
 	lu << "link set dev lo up";
@@ -740,21 +829,18 @@ main (int argc, char ** argv)
 		RunIp(nodes.Get(node), Seconds(10), "lb show");
 	}
 
+#if 1
 	BenchRandom_half_duplex();
+#endif
 #if 0
 	std::stringstream src, dst;
 	IDX2ADDR(0, src);
 	IDX2ADDR(1, dst);
 	RunFlowgen(nodes.Get(0), FLOWTIME,
 		   src.str().c_str(), dst.str().c_str());
+
 	RunFlowgenRecv(nodes.Get(1), FLOWTIME - 3);
 #endif
-
-	int stoptime = 60;
-
-	if (stoptime != 0) {
-		Simulator::Stop(Seconds(stoptime));
-	}
 
 
 	/* show packet counter */
@@ -763,8 +849,26 @@ main (int argc, char ** argv)
 	}
 
 
+	int stoptime = 65;
+	Simulator::Stop(Seconds(stoptime));
 	Simulator::Run();
 	Simulator::Destroy();
 
+	printf ("\n");
+	printf ("Drop Count\n");
+	printf ("MacTxDrop : %lu\n"
+		"PhyTxDrop : %lu\n"
+		"MacRxDrop : %lu\n"
+		"PhyRxDrop : %lu\n"
+		"\n"
+		"PhyTxEnd  : %lu\n"
+		"PhyRxEnd  : %lu\n"
+		"Link Rate : %f\n",
+		mactxdrop_cnt, phytxdrop_cnt, macrxdrop_cnt, phyrxdrop_cnt,
+		mactx_cnt, macrx_cnt,
+		(float)(macrx_cnt) / (float)(mactx_cnt) * 100);
+	
+
 	return 0;
 }
+
