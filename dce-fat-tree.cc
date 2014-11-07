@@ -64,7 +64,7 @@ NetDeviceContainer	ndc_edge2node[EDGE2NODELINKS];
 #define FLOWLEN		1024
 #define FLOWRANDOM	"-r"
 #define FLOWINTERVAL	500 		/* usec */
-#define FLOWDURATION	30		/* sec  */
+#define FLOWDURATION	40		/* sec  */
 #define FLOWCOUNT	(1000000 / FLOWINTERVAL) * FLOWDURATION
 
 #define FLOWTIME	30
@@ -293,6 +293,38 @@ pop_random_node(std::list<struct npool> * nodepool)
 }
 
 int
+pop_random_node_ex_me(int me, std::list<struct npool> * nodepool)
+{
+	int idx = 0;
+	int n = 0;
+	int len = nodepool->size();
+	int x = 0;
+
+	if (len == 0) {
+		x = 0;
+	} else {
+		do {
+			x = rand () % len;
+		} while (x != me);
+	}
+
+	for (std::list<struct npool>::iterator it = nodepool->begin();
+	     it != nodepool->end(); it++) {
+		if (x == n) {
+			idx = it->idx;
+			it->remain--;
+			if (it->remain == 0) 
+				nodepool->erase (it);
+
+			break;
+		}
+		n++;
+	}
+
+	return idx;
+}
+
+int
 BenchRandom (int i)
 {
 	std::list<npool> nodepool;
@@ -308,20 +340,19 @@ BenchRandom (int i)
 	for (int node = 0; node < NODENUM; node++) {
 		for (int n = 0; n < i; n++) {
 			/* pop i nodes from nodepool.*/
-			int nidx = pop_random_node(&nodepool);
+			int nidx = pop_random_node_ex_me(node, &nodepool);
 
 			std::stringstream src, dst;
-			src << (int)(node / NODEINPODNUM) + 1 + 200 << "."
-			    << node % NODEINEDGENUM + 1 << "."
-			    << (int)(node / NODEINEDGENUM) % EDGESWINPODNUM
-				+ 1 << "." << "2";
+			src << (node / NODEINPODNUM) + 1 + 200 << "."
+			    << (node / NODEINEDGENUM) % NODEINEDGENUM  + 1 
+			    << "." << node % EDGESWINPODNUM + 1
+			    << "." << "2";
 
-			dst << (int)(nidx / NODEINPODNUM) + 1 + 200 << "."
-			    << nidx % NODEINEDGENUM + 1 << "."
-			    << (int)(nidx / NODEINEDGENUM) % EDGESWINPODNUM
-				+ 1 << "." << "2";
+			dst << (nidx / NODEINPODNUM) + 1 + 200 << "."
+			    << (nidx / NODEINEDGENUM) % NODEINEDGENUM  + 1 
+			    << "." << nidx % EDGESWINPODNUM + 1
+			    << "." << "2";
 
-			
 			printf ("flowgen from %s to %s\n",
 				src.str().c_str(), dst.str().c_str());
 			RunFlowgen(nodes.Get(node), FLOWTIME,
