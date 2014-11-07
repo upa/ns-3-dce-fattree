@@ -39,7 +39,7 @@ NS_LOG_COMPONENT_DEFINE ("DceFatTree");
 #define AGGR2EDGELINKS	(AGGRSWINPODNUM * EDGESWINPODNUM * PODNUM)
 #define EDGE2NODELINKS	(NODENUM)
 
-#define LINKSPEED "1Mbps"
+#define LINKSPEED "10Mbps"
 
 NodeContainer	rootsw;
 NodeContainer	aggrsw;
@@ -61,13 +61,19 @@ NetDeviceContainer	ndc_edge2node[EDGE2NODELINKS];
 
 #define FLOWNUM		20
 #define FLOWDIST	"same"
-#define FLOWLEN		64
+#define FLOWLEN		1024
 #define FLOWRANDOM	"-r"
-//#define FLOWCOUNT	16777216
-#define FLOWCOUNT	65536
+#define FLOWINTERVAL	500 		/* usec */
+#define FLOWDURATION	30		/* sec  */
+#define FLOWCOUNT	(1000000 / FLOWINTERVAL) * FLOWDURATION
 
 #define FLOWTIME	30
-#define FLOWDURATION	3
+
+#define STOPTIME	120
+
+char flow_distribution[16];	/* default FLOWDIST */
+
+
 
 static void
 SetRlimit()
@@ -157,6 +163,23 @@ AddRelay(Ptr<Node> node, Time at, const char *prefix, const char *relay)
 }
 
 static void
+AddGre(Ptr<Node> node, Time at, const char * loaddr)
+{
+	std::ostringstream oss;
+	oss << "link add type gre local " << loaddr;
+	RunIp(node, at, oss.str());
+}
+
+static void
+UpGre(Ptr<Node> node, Time at)
+{
+	std::ostringstream oss;
+	oss << "link set dev gre0 up";
+	RunIp(node, at, oss.str());
+}
+
+
+static void
 RunFlowgen(Ptr<Node> node, int at, const char *src, const char *dst)
 {
 	DceApplicationHelper process;
@@ -165,8 +188,10 @@ RunFlowgen(Ptr<Node> node, int at, const char *src, const char *dst)
 	std::ostringstream oss;
 
 	oss << " -s " << src << " -d " << dst << " -n " << FLOWNUM
-	    << " -t " << FLOWDIST << " -l " << FLOWLEN << " " << FLOWRANDOM
-	    << " -c " << FLOWCOUNT << " -i 100 -m " << time (NULL) << " -v";
+	    << " -t " << flow_distribution
+	    << " -l " << FLOWLEN << " " << FLOWRANDOM
+	    << " -c " << FLOWCOUNT << " -i " << FLOWINTERVAL
+	    << " -m " << time (NULL) + node->GetId() << "";
 
 	process.SetBinary("flowgen");
 	process.SetStackSize(1 << 20);
@@ -201,7 +226,7 @@ RunFlowgenRecv(Ptr<Node> node, int at)
 	ApplicationContainer apps;
 
 	std::ostringstream oss;
-	oss << " -e -v";
+	oss << " -e";
 
 	process.SetBinary("flowgen");
 	process.SetStackSize(1 << 20);
@@ -417,7 +442,44 @@ main (int argc, char ** argv)
 
 	int pcap = 0;
 	int ospf = 0;
-	int flow = 1;
+	bool iplb = false;
+	bool flowbase = false;
+	bool dist_same = false;
+	bool dist_random = false;
+	bool dist_power = false;
+	CommandLine cmd;
+	
+	strcpy (flow_distribution, FLOWDIST);
+
+	cmd.AddValue("iplb", "iplb exp. default false", iplb);
+	cmd.AddValue("same", "distribution same", dist_same);
+	cmd.AddValue("random", "distribution random", dist_random);
+	cmd.AddValue("power", "distribution power", dist_power);
+	cmd.AddValue("flowbase", "iplb flowbase", flowbase);
+	cmd.Parse (argc, argv);
+
+
+	if (iplb) {
+		printf ("argument : iplb yes\n");
+	} else {
+		printf ("argument : iplb no\n");
+	}
+
+	if (dist_same) {
+		strcpy (flow_distribution, "same");
+	} else if (dist_random) {
+		strcpy (flow_distribution, "random");
+	} else if (dist_power) {
+		strcpy (flow_distribution, "power");
+	}
+
+	if (flowbase) {
+		printf ("argument : flow base\n");
+	}
+
+	printf ("argument : flow distribution %s\n", flow_distribution);
+
+	fflush (0);
 
 	SetRlimit();
 
@@ -680,6 +742,9 @@ main (int argc, char ** argv)
 		AddLoAddress(rootsw.Get(root), Seconds(0.4),
 			     loaddr.str().c_str());
 		RunIp(rootsw.Get(root), Seconds(0.41), loup.str().c_str());
+
+
+
 	}
 
 	/* set up loopback address of aggregation switches.
@@ -700,8 +765,19 @@ main (int argc, char ** argv)
 	}
 
 
-#if 0
+	/* Up GRE interfaces. gre0 is automatically added by ip_gre.ko */
+	for (int root = 0; root < ROOTSWNUM; root++) {
+//		AddGre(rootsw.Get(root), Seconds(0.42), loaddr.str().c_str());
+		UpGre(rootsw.Get(root), Seconds(0.43));		
+	}
+
+	for (int aggr = 0; aggr < AGGRSWNUM; aggr++) {
+		UpGre(aggrsw.Get(aggr), Seconds(0.43));
+	}
+
+
 	/* set up iplb prefix */
+	if (iplb) {
 	for (int pod = 0; pod < PODNUM; pod++) {
 	for (int edge = 0; edge < EDGESWINPODNUM; edge++) {
 	for (int node = 0; node < NODEINEDGENUM; node++) {
@@ -734,7 +810,16 @@ main (int argc, char ** argv)
 	}
 	}
 	}
-#endif
+	}
+
+	/* set flowbase */
+	if (iplb && flowbase) {
+	for (int node = 0; node < NODENUM; node++) {
+		std::stringstream fbase;
+		fbase << "lb set lookup flowbase";
+		RunIp(nodes.Get(node), Seconds(0.55), fbase.str());
+	}
+	}
 
 	/* set packet counter trace */
 	for (int n; n < NODENUM; n++) {
@@ -849,8 +934,7 @@ main (int argc, char ** argv)
 	}
 
 
-	int stoptime = 65;
-	Simulator::Stop(Seconds(stoptime));
+	Simulator::Stop(Seconds(STOPTIME));
 	Simulator::Run();
 	Simulator::Destroy();
 
@@ -863,7 +947,7 @@ main (int argc, char ** argv)
 		"\n"
 		"PhyTxEnd  : %lu\n"
 		"PhyRxEnd  : %lu\n"
-		"Link Rate : %f\n",
+		"LinkRate  : %f\n",
 		mactxdrop_cnt, phytxdrop_cnt, macrxdrop_cnt, phyrxdrop_cnt,
 		mactx_cnt, macrx_cnt,
 		(float)(macrx_cnt) / (float)(mactx_cnt) * 100);
