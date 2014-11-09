@@ -39,7 +39,7 @@ NS_LOG_COMPONENT_DEFINE ("DceFatTree");
 #define AGGR2EDGELINKS	(AGGRSWINPODNUM * EDGESWINPODNUM * PODNUM)
 #define EDGE2NODELINKS	(NODENUM)
 
-#define LINKSPEED "10Mbps"
+#define LINKSPEED "1Mbps"
 
 NodeContainer	rootsw;
 NodeContainer	aggrsw;
@@ -63,13 +63,13 @@ NetDeviceContainer	ndc_edge2node[EDGE2NODELINKS];
 #define FLOWDIST	"same"
 #define FLOWLEN		1024
 #define FLOWRANDOM	"-r"
-#define FLOWINTERVAL	500 		/* usec */
-#define FLOWDURATION	40		/* sec  */
+#define FLOWINTERVAL	8000 		/* usec */
+#define FLOWDURATION	60		/* sec  */
 #define FLOWCOUNT	(1000000 / FLOWINTERVAL) * FLOWDURATION
 
 #define FLOWTIME	30
-
-#define STOPTIME	120
+#define FLOWCOUNTSTART	(FLOWTIME + FLOWNUM * 1.5)
+#define STOPTIME	(FLOWTIME + FLOWDURATION + 5)
 
 char flow_distribution[16];	/* default FLOWDIST */
 
@@ -423,6 +423,8 @@ unsigned long macrxdrop_cnt = 0;
 unsigned long phyrxdrop_cnt = 0;
 unsigned long mactx_cnt = 0;
 unsigned long macrx_cnt = 0;
+unsigned long mactx_cnt_before = 0;
+unsigned long macrx_cnt_before = 0;
 
 void
 trace_mactxdrop (std::string path, Ptr<const Packet> packet)
@@ -455,14 +457,30 @@ trace_phyrxdrop (std::string path, Ptr<const Packet> packet)
 void
 trace_mactx (std::string path, Ptr<const Packet> packet)
 {
-	mactx_cnt++;
+
+	int64_t countstart = Seconds(FLOWCOUNTSTART).GetInteger();
+	int64_t sim_now = Simulator::Now().GetInteger();
+	
+	if (countstart < sim_now) {
+		mactx_cnt++;
+	} else {
+		mactx_cnt_before++;
+	}
 	return;
 }
 
 void
 trace_macrx (std::string path, Ptr<const Packet> packet)
 {
-	macrx_cnt++;
+
+	int64_t countstart = Seconds(FLOWCOUNTSTART).GetInteger();
+	int64_t sim_now = Simulator::Now().GetInteger();
+
+	if (countstart < sim_now) {
+		macrx_cnt++;
+	} else {
+		macrx_cnt_before++;
+	}
 	return;
 }
 
@@ -547,7 +565,7 @@ main (int argc, char ** argv)
 		if (pcap)
 			p2p.EnablePcapAll ("fat-tree-r-a");
 		p2p.SetDeviceAttribute("DataRate", StringValue (LINKSPEED));
-		p2p.SetChannelAttribute("Delay", StringValue ("1ms"));
+		p2p.SetChannelAttribute("Delay", StringValue ("0ms"));
 
 		nc_root2aggr[linkn] = NodeContainer(rootsw.Get(root),
 						    aggrsw.Get(aggrn));
@@ -976,11 +994,16 @@ main (int argc, char ** argv)
 		"MacRxDrop : %lu\n"
 		"PhyRxDrop : %lu\n"
 		"\n"
+		"PhyTxBefore: %lu\n"
+		"PhyRxBefore: %lu\n"
 		"PhyTxEnd  : %lu\n"
 		"PhyRxEnd  : %lu\n"
+		"LinkBofre : %f\n"
 		"LinkRate  : %f\n",
 		mactxdrop_cnt, phytxdrop_cnt, macrxdrop_cnt, phyrxdrop_cnt,
+		mactx_cnt_before, macrx_cnt_before,
 		mactx_cnt, macrx_cnt,
+		(float)(macrx_cnt_before) / (float)(mactx_cnt_before) * 100,
 		(float)(macrx_cnt) / (float)(mactx_cnt) * 100);
 	
 
