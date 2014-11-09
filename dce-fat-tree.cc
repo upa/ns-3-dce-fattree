@@ -39,7 +39,7 @@ NS_LOG_COMPONENT_DEFINE ("DceFatTree");
 #define AGGR2EDGELINKS	(AGGRSWINPODNUM * EDGESWINPODNUM * PODNUM)
 #define EDGE2NODELINKS	(NODENUM)
 
-#define LINKSPEED "1Mbps"
+#define LINKSPEED "8Mbps"
 
 NodeContainer	rootsw;
 NodeContainer	aggrsw;
@@ -59,16 +59,18 @@ NetDeviceContainer	ndc_edge2node[EDGE2NODELINKS];
 #define ROOTLOPREFIX	"250.255.255."
 #define AGGRLOPREFIX	"250.255."
 
+
+/* FLowGen related parameters */
 #define FLOWNUM		20
 #define FLOWDIST	"same"
-#define FLOWLEN		1024
+#define FLOWLEN		1000
 #define FLOWRANDOM	"-r"
-#define FLOWINTERVAL	8000 		/* usec */
-#define FLOWDURATION	60		/* sec  */
+#define FLOWINTERVAL	1000 		/* usec */
+#define FLOWDURATION	30		/* sec  */
 #define FLOWCOUNT	(1000000 / FLOWINTERVAL) * FLOWDURATION
 
 #define FLOWTIME	30
-#define FLOWCOUNTSTART	(FLOWTIME + FLOWNUM * 1.5)
+#define FLOWCOUNTSTART	(FLOWTIME + FLOWNUM)
 #define STOPTIME	(FLOWTIME + FLOWDURATION + 5)
 
 char flow_distribution[16];	/* default FLOWDIST */
@@ -864,9 +866,13 @@ main (int argc, char ** argv)
 	/* set flowbase */
 	if (iplb && flowbase) {
 	for (int node = 0; node < NODENUM; node++) {
-		std::stringstream fbase;
+		std::stringstream fbase, show;
 		fbase << "lb set lookup flowbase";
 		RunIp(nodes.Get(node), Seconds(0.55), fbase.str());
+
+		show << "lb flow show detail";
+		RunIp(nodes.Get(node), Seconds(FLOWTIME + FLOWDURATION + 0.1),
+			show.str());
 	}
 	}
 
@@ -977,11 +983,6 @@ main (int argc, char ** argv)
 #endif
 
 
-	/* show packet counter */
-	for (int node = 0; node < NODENUM; node++) {
-		RunIp(nodes.Get(node), Seconds (60), "-s link");
-	}
-
 
 	Simulator::Stop(Seconds(STOPTIME));
 	Simulator::Run();
@@ -999,12 +1000,15 @@ main (int argc, char ** argv)
 		"PhyTxEnd  : %lu\n"
 		"PhyRxEnd  : %lu\n"
 		"LinkBofre : %f\n"
-		"LinkRate  : %f\n",
+		"LinkRate  : %f\n"
+		"LinkAll   : %f\n",
 		mactxdrop_cnt, phytxdrop_cnt, macrxdrop_cnt, phyrxdrop_cnt,
 		mactx_cnt_before, macrx_cnt_before,
 		mactx_cnt, macrx_cnt,
 		(float)(macrx_cnt_before) / (float)(mactx_cnt_before) * 100,
-		(float)(macrx_cnt) / (float)(mactx_cnt) * 100);
+		(float)(macrx_cnt) / (float)(mactx_cnt) * 100,
+		(float)(macrx_cnt_before + macrx_cnt) /
+		(float)(mactx_cnt_before + mactx_cnt) * 100);
 	
 
 	return 0;
