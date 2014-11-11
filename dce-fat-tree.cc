@@ -401,7 +401,7 @@ BenchRandom_half_duplex ()
 		    << "." << "2";
 
 
-		printf ("flowgen from idx %d:%s to idx %d:%s\n",
+		printf ("flowgen from idx %3d:%s to idx %3d:%s\n",
 			sidx, src.str().c_str(), didx, dst.str().c_str());
 
 		RunFlowgen(nodes.Get(sidx), FLOWTIME + 3,
@@ -415,7 +415,47 @@ BenchRandom_half_duplex ()
 static void
 BenchStride(int i)
 {
+	/* node X sends to (X + i % NODENUM) */
+
+	printf ("Benchmark Stride. Skip index is %d\n", i);
+
+	int check[NODENUM];
 	
+	for (int n = 0; n < NODENUM; n++)
+		check[n] = 0;
+
+	for (int sidx = 0; sidx < NODENUM; sidx++) {
+		/* this host already send or recv traffic */
+		if (check[sidx])
+			continue;
+		
+		int didx = (sidx + i) % NODENUM;
+
+		if (check[didx])
+			continue;
+
+		std::stringstream src, dst;
+		src << (sidx / NODEINPODNUM) + 1 + 200 << "."
+		    << (sidx / NODEINEDGENUM) % NODEINEDGENUM  + 1 << "."
+		    << sidx % EDGESWINPODNUM + 1
+		    << "." << "2";
+
+		dst << (didx / NODEINPODNUM) + 1 + 200 << "."
+		    << (didx / NODEINEDGENUM) % NODEINEDGENUM  + 1 << "."
+		    << didx % EDGESWINPODNUM + 1
+		    << "." << "2";
+
+
+		printf ("flowgen from idx %3d:%s to idx %3d:%s\n",
+			sidx, src.str().c_str(), didx, dst.str().c_str());
+
+		RunFlowgen(nodes.Get(sidx), FLOWTIME + 3,
+		src.str().c_str(), dst.str().c_str());
+		RunFlowgenRecv(nodes.Get(didx), FLOWTIME);
+
+		check[sidx] = 1;
+		check[didx] = 1;
+	}
 }
 
 
@@ -498,6 +538,11 @@ main (int argc, char ** argv)
 	bool dist_same = false;
 	bool dist_random = false;
 	bool dist_power = false;
+	bool stride = false;
+	bool stride1 = false;
+	bool stride2 = false;
+	bool stride4 = false;
+	bool stride8 = false;
 	CommandLine cmd;
 	
 	strcpy (flow_distribution, FLOWDIST);
@@ -507,8 +552,12 @@ main (int argc, char ** argv)
 	cmd.AddValue("random", "distribution random", dist_random);
 	cmd.AddValue("power", "distribution power", dist_power);
 	cmd.AddValue("flowbase", "iplb flowbase", flowbase);
+	cmd.AddValue("stride", "use stride", stride);
+	cmd.AddValue("stride1", "index of stride skip is 1", stride1);
+	cmd.AddValue("stride2", "index of stride skip is 2", stride2);
+	cmd.AddValue("stride4", "index of stride skip is 4", stride4);
+	cmd.AddValue("stride8", "index of stride skip is 8", stride8);
 	cmd.Parse (argc, argv);
-
 
 	if (iplb) {
 		printf ("argument : iplb yes\n");
@@ -627,7 +676,7 @@ main (int argc, char ** argv)
 
 
 
-	/* set up Links between Aggrsw and Root sw */
+	/* set up Links between Aggrsw and Edge sw */
 	for (int pod = 0; pod < PODNUM; pod++) {
 	for (int aggr = 0; aggr < AGGRSWINPODNUM; aggr++) {
 	for (int edge = 0; edge < EDGESWINPODNUM; edge++) {
@@ -836,26 +885,35 @@ main (int argc, char ** argv)
 		int edgen = EDGESWINPODNUM * pod + edge;
 		int noden = NODEINPODNUM * pod + NODEINEDGENUM * edge + node;
 
-		/* set up inter-pod prefix = 0.0.0.0 among rootsw */
+		/* set up inter-pod prefix = 200+pod.0.0.0/8 among rootsw */
 		for (int root = 0; root < ROOTSWNUM; root++) {
-			std::stringstream rootlo;
+		for (int p = 0; p < PODNUM; p++) {
+			if (p == pod) {
+				/* own pod*/
+				continue;
+			}
+			std::stringstream prefix, rootlo;
+			prefix << 200 + p + 1 << ".0.0.0/8";
 			rootlo << ROOTLOPREFIX << root + 1;
 			AddRelay(nodes.Get(noden), Seconds(0.5),
-				 "0.0.0.0/0", rootlo.str().c_str());
+				 prefix.str().c_str(), rootlo.str().c_str());
+		}
 		}
 		
 		/* set up inner-pod prefixes */
 		for (int aggr = 0; aggr < AGGRSWINPODNUM; aggr++) {
+		for (int e = 0; e < EDGESWINPODNUM; e++) {
 			std::stringstream prefix, relay;
-			if (aggr == edge) {
+			if (e == edge) {
 				/* own prefix */
 				continue;
 			}
 			prefix << pod + 1 + 200 << "."
-			       << aggr + 1 << ".0.0/16";
+			       << e + 1 << ".0.0/16";
 			relay << AGGRLOPREFIX << pod + 1 << "." << aggr + 1;
 			AddRelay(nodes.Get(noden), Seconds(0.51),
 				 prefix.str().c_str(), relay.str().c_str());
+		}
 		}
 
 	}
@@ -969,19 +1027,23 @@ main (int argc, char ** argv)
 		RunIp(nodes.Get(node), Seconds(10), "lb show");
 	}
 
-#if 1
-	BenchRandom_half_duplex();
-#endif
-#if 0
-	std::stringstream src, dst;
-	IDX2ADDR(0, src);
-	IDX2ADDR(1, dst);
-	RunFlowgen(nodes.Get(0), FLOWTIME,
-		   src.str().c_str(), dst.str().c_str());
 
-	RunFlowgenRecv(nodes.Get(1), FLOWTIME - 3);
-#endif
+	/* Set up benchmark */
+	if (stride) {
 
+		printf ("argument : stride yes\n");
+
+		if (stride1) 
+			BenchStride(1);
+		else if (stride2)
+			BenchStride(2);
+		else if (stride4)
+			BenchStride(4);
+		else if (stride8)
+			BenchStride(8);
+	} else {
+		BenchRandom_half_duplex();
+	}
 
 
 	Simulator::Stop(Seconds(STOPTIME));
