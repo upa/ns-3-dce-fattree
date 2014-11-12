@@ -747,12 +747,28 @@ main (int argc, char ** argv)
 				 rootlo.str().c_str(), aggrsim.str().c_str());
 		}
 
+		/* set route from edge to Aggr,
+		 * prefix is 250.255.Pod+1.Aggr+1/32 (aggr lo),
+		 * next hop is both aggrsims,
+		 * Pod+1+100.Aggr+1+Edge+1.1
+		 */
+		for (int aggrnn = 0; aggrnn < AGGRSWINPODNUM; aggrnn++) {
+			std::stringstream aggrlo, aggrsim;
+			aggrlo << AGGRLOPREFIX << pod + 1 
+			       << "." << aggrnn + 1;
+			aggrsim << pod + 1 + 100 << "." << aggrnn + 1 << "."
+				<< edge + 1 << "." << "1";
+			AddRoute(nc_aggr2edge[linkn].Get(1), Seconds(0.23),
+				 aggrlo.str().c_str(), aggrsim.str().c_str());
+		}
+		
+
 		/* set up default route from Edge to Aggr of Shortest Path */
 		if (aggr == ROOTAGGRSW) {
 			std::stringstream aggrsim;
 			aggrsim << pod + 1 + 100 << "." << aggr + 1 << "."
 				<< edge + 1 << "." << "1";
-			AddRoute(nc_aggr2edge[linkn].Get(1), Seconds(0.23),
+			AddRoute(nc_aggr2edge[linkn].Get(1), Seconds(0.24),
 				 "0.0.0.0/0", aggrsim.str().c_str());
 		}
 		}
