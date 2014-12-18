@@ -543,6 +543,7 @@ main (int argc, char ** argv)
 	bool stride2 = false;
 	bool stride4 = false;
 	bool stride8 = false;
+	bool ecmp = false;
 	CommandLine cmd;
 	
 	strcpy (flow_distribution, FLOWDIST);
@@ -557,6 +558,7 @@ main (int argc, char ** argv)
 	cmd.AddValue("stride2", "index of stride skip is 2", stride2);
 	cmd.AddValue("stride4", "index of stride skip is 4", stride4);
 	cmd.AddValue("stride8", "index of stride skip is 8", stride8);
+	cmd.AddValue("ecmp", "ECMP for default route", ecmp);
 	cmd.Parse (argc, argv);
 
 	if (iplb) {
@@ -578,6 +580,10 @@ main (int argc, char ** argv)
 	}
 
 	printf ("argument : flow distribution %s\n", flow_distribution);
+
+	if (ecmp) {
+		printf ("argument : ECMP enable\n");
+	}
 
 	fflush (0);
 
@@ -666,9 +672,12 @@ main (int argc, char ** argv)
 			 rootlo.str().c_str(), rootsim.str().c_str());
 
 		/* set up default route from Aggr to Root of Shortest Path */
+                /* default route is parallized when ecmp is enabled */
+		if (!ecmp) {
 		if (root == ROOTROOTSW) {
 			AddRoute(nc_root2aggr[linkn].Get(1), Seconds(0.13),
 				 "0.0.0.0/0", rootsim.str().c_str());
+		}
 		}
 		}
 	}
@@ -764,12 +773,15 @@ main (int argc, char ** argv)
 		
 
 		/* set up default route from Edge to Aggr of Shortest Path */
+		/* default route is parallized when ecmp is enabled */
+		if (!ecmp) {
 		if (aggr == ROOTAGGRSW) {
 			std::stringstream aggrsim;
 			aggrsim << pod + 1 + 100 << "." << aggr + 1 << "."
 				<< edge + 1 << "." << "1";
 			AddRoute(nc_aggr2edge[linkn].Get(1), Seconds(0.24),
 				 "0.0.0.0/0", aggrsim.str().c_str());
+		}
 		}
 		}
 	}
@@ -880,6 +892,51 @@ main (int argc, char ** argv)
 	}
 	}
 
+
+	/* set up ECMP routes. ECMPed route is Default route only.
+	 * From edge to aggregation, and aggregation to root.
+	 */
+	if (ecmp) {
+
+		/* setup ECMP for default route from aggr to root */
+		for (int aggrn = 0; aggrn < AGGRSWNUM; aggrn++) {
+			int pod = (int)(aggrn / AGGRSWINPODNUM);
+			int aggr = aggrn % AGGRSWINPODNUM;
+
+			std::stringstream route;
+			route << "route add to default";
+
+			for (int root = (KARY2 * aggr);
+			     root < KARY2 * (aggr + 1); root++) {
+				route << " nexthop via "
+				      << root + 1 << "." << pod + 1 << "."
+				      << aggr + 1 << "." << "1 weight 1";
+			}
+			printf ("aggr route %d, %s\n", 
+
+				aggrn, route.str().c_str());
+			RunIp (aggrsw.Get(aggrn), Seconds(0.42), route.str());
+		}
+
+		/* setup ECMP for deafult route from edge to aggr */
+		for (int edgen = 0; edgen < EDGESWNUM; edgen++) {
+			int pod = (int)(edgen / EDGESWINPODNUM);
+			int edge = edgen % EDGESWINPODNUM;
+
+			std::stringstream route;
+			route << "route add to default";
+
+			for (int aggr = 0;
+			     aggr < AGGRSWINPODNUM; aggr++) {
+				route << " nexthop via "
+				      << pod + 101 << "." << aggr + 1 << "."
+				      << edge + 1 << ".1 weight 1" ;
+			}
+			printf ("edge route %d, %s\n", 
+				edgen, route.str().c_str());
+			RunIp (edgesw.Get(edgen), Seconds(0.42), route.str());
+		}
+	}
 
 	/* Up GRE interfaces. gre0 is automatically added by ip_gre.ko */
 	for (int root = 0; root < ROOTSWNUM; root++) {
